@@ -1,0 +1,6 @@
+{
+    "name": "compress",
+    "uses": [
+        "neo/buffer"
+    ]
+}

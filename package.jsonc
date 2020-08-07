@@ -1,0 +1,10 @@
+{
+    "name": "neo-compress",
+    "namespace": "neo",
+    "version": "0.1.0",
+    "depends": [
+        "neo-buffer^0.3.0-dev",
+        "neo-fun^0.3.3-dev",
+    ],
+    "test_driver": "Catch-Main"
+}
