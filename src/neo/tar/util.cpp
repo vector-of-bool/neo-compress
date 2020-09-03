@@ -22,9 +22,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
-void restore_permissions(fs::path const&          file,
-                         ustar_member_info const& meminfo,
-                         const fs::path&          targz,
+void restore_permissions(const fs::path&          file,
+                         const ustar_member_info& meminfo,
+                         std::string_view         input_name,
                          const fs::path&          partpath);
 
 #if !NEO_OS_IS_WINDOWS
@@ -32,7 +32,7 @@ void restore_permissions(const fs::path&          file,
                          const ustar_member_info& meminfo,
                          std::string_view         input_name,
                          const fs::path&          partpath) {
-    auto rc = ::chmod(file.c_str(), meminfo.mode);
+    auto rc = ::chmod(file.c_str(), static_cast<mode_t>(meminfo.mode));
     if (rc) {
         throw std::system_error(std::error_code(errno, std::system_category()),
                                 "Failed to restore filemode for [" + file.string()
@@ -139,7 +139,7 @@ void neo::expand_directory_targz(const fs::path&  destination,
                                             + file_dest.string() + "]: " + e.what());
             }
             ofile.close();
-            if constexpr (!NEO_OS_IS_WINDOWS) {
+            if constexpr (!neo::os_is_windows) {
                 restore_permissions(file_dest, meminfo, input_name, norm);
             }
         } else {
