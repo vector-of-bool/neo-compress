@@ -12,6 +12,8 @@
 #include <neo/ref.hpp>
 #include <neo/switch_coro.hpp>
 
+#include <stdexcept>
+
 namespace neo {
 
 /**
@@ -23,9 +25,9 @@ class gzip_compressor {
     [[no_unique_address]] wrap_refs_t<InnerCompressor> _compressor;
 
     // Magic [0x1f, 0x8b] compresstion type DEFLATE [0x08]
-    constexpr static const_buffer _fixed_header{"\x1f\x8b\x08"};
+    static inline const_buffer _fixed_header = const_buffer{"\x1f\x8b\x08"};
     // We don't support mtime yet
-    constexpr static const_buffer _mtime{"\xde\xad\xbe\xef"};
+    static inline const_buffer _mtime = const_buffer{"\xde\xad\xbe\xef"};
 
     const_buffer  _header_buf = _fixed_header;
     const_buffer  _mtime_buf  = _mtime;
@@ -240,13 +242,13 @@ class gzip_decompressor {
     std::byte _xfl{};
     std::byte _os{};
 
-    arrbuf<2>           _xlen;
-    arrbuf<1024 * 1024> _fextra;
-    arrbuf<1024>        _fname;
-    arrbuf<256>         _comment;
-    arrbuf<2>           _hcrc;
-    arrbuf<4>           _stored_crc32;
-    arrbuf<4>           _stored_size;
+    arrbuf<2>        _xlen;
+    arrbuf<1024 * 2> _fextra;
+    arrbuf<1024>     _fname;
+    arrbuf<256>      _comment;
+    arrbuf<2>        _hcrc;
+    arrbuf<4>        _stored_crc32;
+    arrbuf<4>        _stored_size;
 
     std::size_t _actual_size = 0;
     crc32       _actual_crc;
@@ -368,6 +370,9 @@ public:
         // Optional, fextra:
         if (_fextra_set()) {
             CORO_READ_BUF(_xlen, in);
+            if (_xlen_uint16() > _fextra.buf.size()) {
+                throw std::runtime_error("gzip xlen is larger than supported");
+            }
             _fextra.buf = _fextra.buf.first(_xlen_uint16());
             CORO_READ_BUF(_fextra, in);
         }
