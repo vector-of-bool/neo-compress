@@ -2,10 +2,13 @@
 
 #include <neo/assert.hpp>
 #include <neo/buffer_algorithm/copy.hpp>
+#include <neo/buffer_algorithm/decode.hpp>
+#include <neo/buffer_algorithm/encode.hpp>
 #include <neo/buffer_range.hpp>
-#include <neo/io_buffer.hpp>
+#include <neo/dynbuf_io.hpp>
 
 #include <neo/assert.hpp>
+#include <neo/iterator_facade.hpp>
 #include <neo/ref.hpp>
 
 #include <array>
@@ -106,74 +109,11 @@ struct ustar_member_header_raw {
     std::array<char, 8>   devmajor  = {};
     std::array<char, 8>   devminor  = {};
     std::array<char, 155> prefix    = {};
+    // The header doesn't fill the entire block
+    std::array<char, 12> _dummy = {};
 };
 
-static_assert(sizeof(ustar_member_header_raw) == 345 + 155);
-
-struct ustar_reader_base {
-    std::uint64_t _remaining_member_size = 0;
-    int           _trailing_member_nuls  = 0;
-
-    template <buffer_range Bufs>
-    ustar_member_header_raw _read_raw_header(Bufs&& b) noexcept {
-        detail::ustar_member_header_raw raw;
-        auto n_copied = buffer_copy(mutable_buffer(byte_pointer(&raw), sizeof raw), b);
-        neo_assert(invariant,
-                   n_copied == sizeof raw,
-                   "Did not copy enough bytes into raw tar header",
-                   n_copied);
-        return raw;
-    }
-
-    std::optional<ustar_member_info> _process_raw_header(const ustar_member_header_raw& raw) {
-        // If the magic number is all null, assume that we have read the final record.
-        // TODO: Validate that the stream ends with two nul-blocks
-        if (raw.magic_ver == null_tar_magic_ver) {
-            return std::nullopt;
-        }
-
-        // Respect GNU or POSIX tar magic/version headers
-        if (raw.magic_ver != detail::gnu_tar_magic_ver
-            && raw.magic_ver != detail::posix_tar_magic_ver) {
-            throw std::runtime_error("Invalid magic number in tar archive");
-        }
-
-        auto as_integer = [](const auto& str) -> std::uint64_t {
-            std::uint64_t ret = 0;
-            if (str[0] == '\x00') {
-                return 0;
-            }
-            auto res = std::from_chars(str.data(), str.data() + str.size(), ret, 8);
-            if (res.ec != std::errc{}) {
-                throw std::runtime_error("Invalid integral string in archive member header");
-            }
-            return ret;
-        };
-
-        auto mem_size       = as_integer(raw.size);
-        auto n_data_records = (mem_size + sizeof(raw)) / detail::ustar_block_size;
-
-        _remaining_member_size = mem_size;
-        _trailing_member_nuls
-            = static_cast<int>((n_data_records * detail::ustar_block_size) - mem_size);
-
-        return ustar_member_info{
-            .filename_bytes = raw.filename,
-            .mode           = static_cast<int>(as_integer(raw.mode)),
-            .uid            = static_cast<int>(as_integer(raw.uid)),
-            .gid            = static_cast<int>(as_integer(raw.gid)),
-            .size           = mem_size,
-            .mtime          = as_integer(raw.mtime),
-            .typeflag       = static_cast<ustar_member_info::type_t>(raw.typeflag[0]),
-            .linkname_bytes = raw.linkname,
-            .uname_bytes    = raw.uname,
-            .gname_bytes    = raw.gname,
-            .devmajor       = static_cast<int>(as_integer(raw.devmajor)),
-            .devminor       = static_cast<int>(as_integer(raw.devminor)),
-            .prefix_bytes   = raw.prefix,
-        };
-    }
-};
+static_assert(sizeof(ustar_member_header_raw) == ustar_block_size);
 
 class ustar_writer_base {
 public:
@@ -186,49 +126,99 @@ public:
 
 }  // namespace detail
 
-template <buffer_source Input>
-class ustar_reader : detail::ustar_reader_base {
-    // The underlying data-reader:
-    [[no_unique_address]] wrap_if_reference_t<Input> _input;
+class ustar_header_decoder {
+    detail::ustar_member_header_raw _raw;
+    std::size_t                     _n_read_raw = 0;
 
-    static_assert(sizeof(detail::ustar_member_header_raw) == (345 + 155));
+    ustar_member_info _value{};
+
+public:
+    struct result {
+        std::size_t        bytes_read = 0;
+        bool               done       = false;
+        ustar_member_info* _val_ptr   = nullptr;
+
+        bool has_error() { return false; }
+        bool has_value() { return done || _val_ptr; }
+
+        auto& value() noexcept {
+            neo_assert(expects,
+                       _val_ptr,
+                       "header-decode value access with incomplete decode result");
+            return *_val_ptr;
+        }
+    };
+
+    result operator()(const_buffer cb);
+};
+
+struct ustar_header_encoder {
+    detail::ustar_member_header_raw _raw;
+    std::size_t                     _n_written_raw = 0;
+
+public:
+    struct result {
+        std::size_t    bytes_written = 0;
+        bool           done_         = false;
+        constexpr bool done() const noexcept { return done_; }
+    };
+
+    result operator()(mutable_buffer mb, const ustar_member_info&) noexcept;
+};
+
+template <buffer_source Input>
+class ustar_reader {
+    // The underlying data-reader:
+    [[no_unique_address]] wrap_refs_t<Input> _input;
+
+    std::uint64_t _remaining_member_size = 0;
+    int           _trailing_member_nuls  = 0;
+
+    ustar_header_decoder _header_decode;
+
+    void _consume_remaining_member_data() {
+        auto&         in           = input();
+        std::uint64_t n_to_consume = _remaining_member_size + _trailing_member_nuls;
+        while (n_to_consume) {
+            auto&& ignore = in.next(n_to_consume);
+            auto   n_got  = buffer_size(ignore);
+            in.consume(n_got);
+            n_to_consume -= n_got;
+        }
+        _remaining_member_size = 0;
+        _trailing_member_nuls  = 0;
+    }
 
 public:
     explicit ustar_reader(Input&& in)
         : _input(NEO_FWD(in)) {}
 
-    Input&       input() noexcept { return _input; }
-    const Input& input() const noexcept { return _input; }
+    NEO_DECL_UNREF_GETTER(input, _input);
 
     std::optional<ustar_member_info> next_member() {
         // Skip any member data that is trailing
-        input().consume(_remaining_member_size);
-        input().consume(_trailing_member_nuls);
+        _consume_remaining_member_data();
 
-        // Read a block to contain the next header
-        auto next_header = input().data(detail::ustar_block_size);
-        // We must have read an entire block, or the header is incomplete
-        if (buffer_size(next_header) < detail::ustar_block_size) {
-            throw std::runtime_error(
-                "Failed to read an entire data block from ustar archive. (Unexpected EOF?)");
+        // Get the header:
+        auto decode_res = buffer_decode(_header_decode, input());
+        if (!decode_res.has_value() || decode_res.done) {
+            return std::nullopt;
         }
 
-        // Copy the raw header information
-        detail::ustar_member_header_raw raw;
-        auto n_copied = buffer_copy(mutable_buffer(byte_pointer(&raw), sizeof raw), next_header);
-        neo_assert(invariant,
-                   n_copied == sizeof raw,
-                   "Incorrect copy amout when reading in tar header",
-                   n_copied);
-        // Consume that data from the input
-        input().consume(detail::ustar_block_size);
-        // Process the header and return the member info
-        return _process_raw_header(raw);
+        auto meminfo        = decode_res.value();
+        auto n_data_records = (meminfo.size + detail::ustar_block_size) / detail::ustar_block_size;
+
+        _remaining_member_size = meminfo.size;
+        _trailing_member_nuls
+            = static_cast<int>((n_data_records * detail::ustar_block_size) - meminfo.size)
+            % detail::ustar_block_size;
+
+        return decode_res.value();
     }
 
-    auto data(std::size_t max_size) noexcept {
+    auto next(std::size_t max_size) noexcept {
         auto read_size = max_size > _remaining_member_size ? _remaining_member_size : max_size;
-        return input().data(read_size);
+        return input().next(read_size);
     }
 
     void consume(std::size_t s) noexcept {
@@ -241,15 +231,44 @@ public:
         input().consume(s);
     }
 
-    auto all_data() noexcept { return data(_remaining_member_size); }
+    auto all_data() noexcept { return next(_remaining_member_size); }
+
+    class member_iterator : public neo::iterator_facade<member_iterator> {
+        ustar_reader*                    _reader = nullptr;
+        std::optional<ustar_member_info> _info;
+
+    public:
+        constexpr member_iterator() = default;
+        explicit member_iterator(ustar_reader& r)
+            : _reader(&r)
+            , _info(r.next_member()) {}
+
+        struct sentinel_type {};
+
+        const ustar_member_info& dereference() const noexcept {
+            neo_assert(expects,
+                       !at_end(),
+                       "Dereferenced an end/invalid ustar_reader::member_iterator");
+            return *_info;
+        }
+
+        void increment() noexcept { _info = _reader->next_member(); }
+
+        constexpr bool at_end() const noexcept { return !_info.has_value(); }
+    };
+
+    auto begin() noexcept { return member_iterator{*this}; }
+    auto end() const noexcept { return typename member_iterator::sentinel_type{}; }
 };
 
 template <typename T>
-ustar_reader(T &&) -> ustar_reader<T>;
+ustar_reader(T &&)->ustar_reader<T>;
 
 template <buffer_sink Output>
 class ustar_writer : public detail::ustar_writer_base {
-    [[no_unique_address]] wrap_if_reference_t<Output> _output;
+    [[no_unique_address]] wrap_refs_t<Output> _output;
+
+    ustar_header_encoder _header_encode;
 
     std::uint64_t _member_data_written = 0;
 
@@ -257,9 +276,11 @@ class ustar_writer : public detail::ustar_writer_base {
         // A global block of zeros. Useful.
         static const std::array<std::byte, detail::ustar_block_size> zeros = {};
         // Write the correct number of zeroes to land the next header onto a good block
-        auto n_zeros = detail::ustar_block_size - (_member_data_written % detail::ustar_block_size);
-        auto out     = output().prepare(n_zeros);
-        if (buffer_size(out) != n_zeros) {
+        auto n_zeros
+            = (detail::ustar_block_size - (_member_data_written % detail::ustar_block_size))
+            % detail::ustar_block_size;
+        auto out = output().prepare(n_zeros);
+        if (buffer_size(out) < n_zeros) {
             throw std::runtime_error(
                 "Failed to write padding zeros in archive block following data member");
         }
@@ -270,109 +291,32 @@ class ustar_writer : public detail::ustar_writer_base {
 
 public:
     explicit ustar_writer(Output&& out)
-        : _output(std::forward<Output>(out)) {}
+        : _output(NEO_FWD(out)) {}
 
-    Output&       output() noexcept { return _output; }
-    const Output& output() const noexcept { return _output; }
+    NEO_DECL_UNREF_GETTER(output, _output);
 
     std::uint64_t write_member_data(const_buffer data) final {
-        auto size      = data.size();
-        auto obuf      = output().prepare(size);
-        auto n_written = buffer_copy(obuf, data);
-        output().commit(n_written);
+        auto n_written = buffer_copy(output(), data);
         _member_data_written += n_written;
         return n_written;
     }
 
-    template <buffer_range Data>
-    std::uint64_t write_member_data(Data&& data) {
-        auto size      = buffer_size(data);
-        auto obuf      = output().prepare(size);
-        auto n_written = buffer_copy(obuf, data);
-        output().commit(n_written);
-        _member_data_written += n_written;
-        return n_written;
-    }
-
-    template <buffer_source In>
+    template <buffer_input In>
     std::uint64_t write_member_data(In&& in) {
-        std::uint64_t n_written_total = 0;
-        while (true) {
-            auto more      = in.data(1024);
-            auto n_written = write_member_data(more);
-            in.consume(n_written);
-            n_written_total += n_written;
-            if (n_written == 0) {
-                break;
-            }
-        }
-        return n_written_total;
+        auto n_written = buffer_copy(output(), in);
+        _member_data_written += n_written;
+        return n_written;
     }
 
     void write_member_header(const ustar_member_info& info) final {
-        detail::ustar_member_header_raw raw = {
-            .filename = info.filename_bytes,
-            .typeflag = {static_cast<char>(info.typeflag)},
-            .linkname = info.linkname_bytes,
-            .uname    = info.uname_bytes,
-            .gname    = info.gname_bytes,
-            .prefix   = info.prefix_bytes,
-        };
-
-        auto put_oct_num = [](auto& out_bytes, auto num) {
-            out_bytes.back() = '\x00';
-            auto res
-                = std::to_chars(out_bytes.data(), out_bytes.data() + out_bytes.size() - 1, num, 8);
-            neo_assert(invariant,
-                       res.ec == std::errc{},
-                       "Failed to convert an octal number in the ustar header",
-                       int(res.ec),
-                       num);
-            auto n_chars    = res.ptr - out_bytes.data();
-            auto dest_first = out_bytes.data() + out_bytes.size() - 1 - n_chars;
-            buffer_copy(mutable_buffer(byte_pointer(dest_first), n_chars), as_buffer(out_bytes));
-            for (auto z_ptr = out_bytes.data(); z_ptr != dest_first; ++z_ptr) {
-                *z_ptr = '0';
-            }
-        };
-        put_oct_num(raw.mode, info.mode);
-        put_oct_num(raw.uid, info.uid);
-        put_oct_num(raw.gid, info.gid);
-        put_oct_num(raw.size, info.size);
-        put_oct_num(raw.mtime, info.mtime);
-        put_oct_num(raw.devmajor, info.devmajor);
-        put_oct_num(raw.devminor, info.devminor);
-
-        auto          raw_buf = trivial_buffer(raw);
-        std::uint64_t chksum  = 0;
-        for (auto p = raw_buf.data(); p != raw_buf.data_end(); ++p) {
-            chksum += static_cast<int>(*p);
+        auto result = buffer_encode(_header_encode, output(), info);
+        if (!result.done()) {
+            throw std::runtime_error("Failed to write tar member header. Not enough room?");
         }
-        put_oct_num(raw.chksum, chksum);
-
-        // Write the header
-        auto out = output().prepare(sizeof raw);
-        if (buffer_size(out) < sizeof raw) {
-            throw std::runtime_error("Failed to prepare room for archive member header");
-        }
-        buffer_copy(out, raw_buf);
-        output().commit(sizeof raw);
-
-        // Write the zero padding
-        static const std::array<char, detail::ustar_block_size - sizeof raw> zeros = {};
-
-        out = output().prepare(sizeof zeros);
-        if (buffer_size(out) < sizeof zeros) {
-            throw std::runtime_error("Failed to prepare room for archive member header (padding)");
-        }
-        buffer_copy(out, as_buffer(zeros));
-        output().commit(sizeof zeros);
     }
 
-    template <typename Input>
-    void write_member(const ustar_member_info& mem_info,
-                      Input&&                  in)  //
-        requires(buffer_source<Input> || buffer_range<Input>) {
+    template <buffer_input Input>
+    void write_member(const ustar_member_info& mem_info, Input&& in) {
         write_member_header(mem_info);
         auto n_written = write_member_data(in);
         neo_assert(invariant,
@@ -387,18 +331,16 @@ public:
 
     void finish() {
         finish_member();
-        auto                      remaining_zeros = detail::ustar_block_size * 2;
-        std::array<std::byte, 64> zeros           = {};
-        while (remaining_zeros) {
-            auto out       = output().prepare(remaining_zeros);
-            auto n_written = buffer_copy(out, as_buffer(zeros));
-            output().commit(n_written);
-            remaining_zeros -= static_cast<int>(n_written);
+        constexpr auto num_zeros        = detail::ustar_block_size * 2;
+        std::byte      zeros[num_zeros] = {};
+        const auto     n_written        = buffer_copy(output(), as_buffer(zeros));
+        if (n_written != num_zeros) {
+            throw std::runtime_error("Failed to write terminating zero blocks on tar archive");
         }
     }
 };
 
 template <typename T>
-ustar_writer(T &&) -> ustar_writer<T>;
+ustar_writer(T &&)->ustar_writer<T>;
 
 }  // namespace neo

@@ -6,6 +6,8 @@
 
 #include <neo/assert.hpp>
 #include <neo/buffer_algorithm/copy.hpp>
+#include <neo/buffer_sink.hpp>
+#include <neo/buffer_source.hpp>
 #include <neo/const_buffer.hpp>
 #include <neo/ref.hpp>
 #include <neo/switch_coro.hpp>
@@ -18,7 +20,7 @@ namespace neo {
  */
 template <compressor_algorithm InnerCompressor>
 class gzip_compressor {
-    [[no_unique_address]] wrap_if_reference_t<InnerCompressor> _compressor;
+    [[no_unique_address]] wrap_refs_t<InnerCompressor> _compressor;
 
     // Magic [0x1f, 0x8b] compresstion type DEFLATE [0x08]
     constexpr static const_buffer _fixed_header{"\x1f\x8b\x08"};
@@ -124,11 +126,11 @@ public:
         PUT_BYTE(out, std::byte(0xff));
 
         // Write the actual body of data
-        do {
+        while (true) {
             {
                 // Compress some data into `out`
                 using std::as_const;
-                auto compress_res = _compressor(as_const(out), as_const(in), f);
+                auto compress_res = unref(_compressor)(as_const(out), as_const(in), f);
                 // Update the running CRC
                 _crc.feed(in.first(compress_res.bytes_read));
                 // Update the running size count
@@ -161,7 +163,8 @@ public:
                                   in.size());
             }
             // Compression is finished. Finish up the Gzip file
-        } while (0);
+            break;
+        }
 
         // Writing the trailer yeah!
         while (_num_crc_bytes_written < sizeof(_crc.value())) {
@@ -214,7 +217,7 @@ gzip_compressor(C &&) -> gzip_compressor<C>;
 
 template <decompressor_algorithm InnerDecompressor>
 class gzip_decompressor {
-    [[no_unique_address]] wrap_if_reference_t<InnerDecompressor> _decompress;
+    [[no_unique_address]] wrap_refs_t<InnerDecompressor> _decompress;
 
     int _coro = 0;
 
@@ -222,6 +225,11 @@ class gzip_decompressor {
     struct arrbuf {
         std::array<std::byte, Len> bytes = {};
         mutable_buffer             buf{bytes};
+
+        constexpr arrbuf() = default;
+        constexpr arrbuf(const arrbuf& other)
+            : bytes(other.bytes)
+            , buf(as_buffer(bytes)) {}
     };
 
     arrbuf<2> _magic;
@@ -383,7 +391,7 @@ public:
         while (true) {
             {
                 // Decompress more
-                const auto decomp_res = _decompress(std::as_const(out), std::as_const(in));
+                const auto decomp_res = unref(_decompress)(std::as_const(out), std::as_const(in));
                 // Update the running CRC
                 _actual_crc.feed(out.first(decomp_res.bytes_written));
                 // Advance our buffers
@@ -422,5 +430,8 @@ public:
 #undef CORO_READ_ZSTR
     }
 };
+
+template <decompressor_algorithm D>
+explicit gzip_decompressor(D &&) -> gzip_decompressor<D>;
 
 }  // namespace neo

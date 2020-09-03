@@ -7,6 +7,8 @@
 
 namespace fs = std::filesystem;
 
+using namespace neo;
+
 using namespace std::literals;
 
 #if NEO_OS_IS_WINDOWS
@@ -132,7 +134,8 @@ void neo::detail::ustar_writer_base::add_file(std::string_view dest, const fs::p
             + filepath.string() + "]");
     }
 
-    mem.size = info.file_size();
+    mem.size     = info.file_size();
+    mem.typeflag = mem.regular_file;
     write_member_header(mem);
 
     std::ifstream infile;
@@ -140,7 +143,7 @@ void neo::detail::ustar_writer_base::add_file(std::string_view dest, const fs::p
     infile.open(filepath, std::ios::binary);
 
     while (1) {
-        thread_local std::array<char, 1024 * 2> buffer;
+        thread_local std::array<char, 1024 * 1024 * 4> buffer;
         auto n_read = infile.readsome(buffer.data(), buffer.size());
         if (n_read == 0) {
             break;
@@ -149,4 +152,112 @@ void neo::detail::ustar_writer_base::add_file(std::string_view dest, const fs::p
     }
 
     finish_member();
+}
+
+ustar_header_decoder::result ustar_header_decoder::operator()(const_buffer cb) {
+    const auto n_read = buffer_copy(trivial_buffer(_raw) + _n_read_raw, cb);
+    _n_read_raw += n_read;
+
+    if (_n_read_raw < sizeof(_raw)) {
+        return {.bytes_read = n_read};
+    }
+
+    _n_read_raw = 0;
+
+    // If the magic number is all null, assume that we have read the final record.
+    // TODO: Validate that the stream ends with two nul-blocks
+    if (_raw.magic_ver == detail::null_tar_magic_ver) {
+        return {.bytes_read = n_read, .done = true};
+    }
+
+    // Respect GNU or POSIX tar magic/version headers
+    if (_raw.magic_ver != detail::gnu_tar_magic_ver
+        && _raw.magic_ver != detail::posix_tar_magic_ver) {
+        throw std::runtime_error("Invalid magic number in tar archive");
+    }
+
+    auto as_integer = [](const auto& str) -> std::uint64_t {
+        std::uint64_t ret = 0;
+        if (str[0] == '\x00') {
+            return 0;
+        }
+        auto res = std::from_chars(str.data(), str.data() + str.size(), ret, 8);
+        if (res.ec != std::errc{}) {
+            throw std::runtime_error("Invalid integral string in archive member header");
+        }
+        return ret;
+    };
+
+    _value = {
+        .filename_bytes = _raw.filename,
+        .mode           = static_cast<int>(as_integer(_raw.mode)),
+        .uid            = static_cast<int>(as_integer(_raw.uid)),
+        .gid            = static_cast<int>(as_integer(_raw.gid)),
+        .size           = as_integer(_raw.size),
+        .mtime          = as_integer(_raw.mtime),
+        .typeflag       = static_cast<ustar_member_info::type_t>(_raw.typeflag[0]),
+        .linkname_bytes = _raw.linkname,
+        .uname_bytes    = _raw.uname,
+        .gname_bytes    = _raw.gname,
+        .devmajor       = static_cast<int>(as_integer(_raw.devmajor)),
+        .devminor       = static_cast<int>(as_integer(_raw.devminor)),
+        .prefix_bytes   = _raw.prefix,
+    };
+
+    // Prepare the read the next member:
+    _n_read_raw = 0;
+    return {.bytes_read = n_read, ._val_ptr = &_value};
+}
+
+ustar_header_encoder::result
+ustar_header_encoder::operator()(mutable_buffer out, const ustar_member_info& info) noexcept {
+    if (_n_written_raw == 0) {
+        _raw = {
+            .filename = info.filename_bytes,
+            .typeflag = {static_cast<char>(info.typeflag)},
+            .linkname = info.linkname_bytes,
+            .uname    = info.uname_bytes,
+            .gname    = info.gname_bytes,
+            .prefix   = info.prefix_bytes,
+        };
+
+        auto put_oct_num = [](auto& out_bytes, auto num) {
+            out_bytes.back() = '\x00';
+            auto res
+                = std::to_chars(out_bytes.data(), out_bytes.data() + out_bytes.size() - 1, num, 8);
+            neo_assert(invariant,
+                       res.ec == std::errc{},
+                       "Failed to convert an octal number in the ustar header",
+                       int(res.ec),
+                       num);
+            auto n_chars    = res.ptr - out_bytes.data();
+            auto dest_first = out_bytes.data() + out_bytes.size() - 1 - n_chars;
+            buffer_copy(mutable_buffer(byte_pointer(dest_first), n_chars), as_buffer(out_bytes));
+            for (auto z_ptr = out_bytes.data(); z_ptr != dest_first; ++z_ptr) {
+                *z_ptr = '0';
+            }
+        };
+        put_oct_num(_raw.mode, info.mode);
+        put_oct_num(_raw.uid, info.uid);
+        put_oct_num(_raw.gid, info.gid);
+        put_oct_num(_raw.size, info.size);
+        put_oct_num(_raw.mtime, info.mtime);
+        put_oct_num(_raw.devmajor, info.devmajor);
+        put_oct_num(_raw.devminor, info.devminor);
+
+        auto          raw_buf = trivial_buffer(_raw);
+        std::uint64_t chksum  = 0;
+        for (auto p = raw_buf.data(); p != raw_buf.data_end(); ++p) {
+            chksum += static_cast<int>(*p);
+        }
+        put_oct_num(_raw.chksum, chksum);
+    }
+    auto cbuf      = trivial_buffer(_raw) + _n_written_raw;
+    auto n_written = buffer_copy(out, cbuf);
+    _n_written_raw += n_written;
+    result ret{.bytes_written = n_written, .done_ = n_written == cbuf.size()};
+    if (ret.done()) {
+        _n_written_raw = 0;
+    }
+    return ret;
 }

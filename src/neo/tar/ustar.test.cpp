@@ -1,6 +1,10 @@
 #include <neo/tar/ustar.hpp>
 
-#include <neo/as_dynamic_buffer.hpp>
+#include <neo/buffer_algorithm/decode.hpp>
+#include <neo/buffer_algorithm/encode.hpp>
+#include <neo/buffers_consumer.hpp>
+#include <neo/dynbuf_io.hpp>
+#include <neo/iostream_io.hpp>
 
 #include <catch2/catch.hpp>
 
@@ -13,17 +17,32 @@ using namespace std::literals;
 static const auto ROOT_DIR_PATH
     = std::filesystem::path(__FILE__).append("../../../..").lexically_normal();
 
+TEST_CASE("Decode a single header") {
+    std::ifstream    infile(ROOT_DIR_PATH / "data/test.tar", std::ios::binary);
+    neo::iostream_io in{infile};
+
+    neo::ustar_header_decoder dec;
+
+    auto res = neo::buffer_decode(dec, in);
+    CHECK(res.has_value());
+    CHECK(res.bytes_read == 512);
+}
+
+TEST_CASE("Encode a single header") {
+    neo::ustar_member_info meminfo;
+    meminfo.set_filename("foo.txt");
+    neo::ustar_header_encoder enc;
+    std::string               buf;
+    buf.resize(512);
+    auto res = neo::buffer_encode(enc, neo::as_buffer(buf), meminfo);
+    CHECK(res.done());
+    // We'll have a lone filename at the beginning of the bytes
+    CHECK(buf.substr(0, 7) == "foo.txt");
+}
+
 TEST_CASE("Read an archive") {
-    std::ifstream infile{ROOT_DIR_PATH / "data/test.tar", std::ios::binary};
-    REQUIRE(infile);
-    std::stringstream strm;
-    strm << infile.rdbuf();
-
-    std::string tar_content = strm.str();
-
-    neo::buffer_range_consumer input{neo::as_buffer(tar_content)};
-
-    neo::ustar_reader reader{input};
+    neo::ustar_reader reader{
+        neo::iostream_io{std::ifstream{ROOT_DIR_PATH / "data/test.tar", std::ios::binary}}};
 
     auto mem = reader.next_member().value();
     CHECK(mem.filename_str() == "01-test.txt");
@@ -59,7 +78,7 @@ TEST_CASE("Read an archive") {
 TEST_CASE("Write a ustar archive") {
     std::string out_str;
 
-    neo::dynamic_io_buffer_adaptor io{neo::as_dynamic_buffer(out_str)};
+    neo::dynbuf_io io{out_str};
 
     neo::ustar_writer writer{io};
 
@@ -77,8 +96,8 @@ TEST_CASE("Write a ustar archive") {
 }
 
 TEST_CASE("Add files to an archive from the filesystem") {
-    std::string                    out_str;
-    neo::dynamic_io_buffer_adaptor io{neo::as_dynamic_buffer(out_str)};
+    std::string    out_str;
+    neo::dynbuf_io io{out_str};
 
     neo::ustar_writer writer{io};
     writer.add_file("shakespeare.txt", ROOT_DIR_PATH / "data/shakespeare.txt");

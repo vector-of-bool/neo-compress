@@ -1,52 +1,48 @@
 #include "./deflate.hpp"
 
-#include <neo/c/miniz/miniz.h>
+#include <zlib.h>
 
-#define MY_STATE reinterpret_cast<::tdefl_compressor&>(_state_bytes)
+#include <ostream>
 
-neo::deflate_compressor::deflate_compressor() noexcept {
-    static_assert(sizeof(_state_bytes) == sizeof(::tdefl_compressor));
-    auto st = new (&MY_STATE)::tdefl_compressor{};
-    auto rc = ::tdefl_init(st, nullptr, nullptr, 0);
-    assert(rc == TDEFL_STATUS_OKAY);
+#define MY_Z_STATE (*static_cast<::z_stream*>(_z_stream_ptr))
+
+using namespace neo;
+
+neo::deflate_compressor::deflate_compressor(deflate_compressor::allocator_type alloc) noexcept
+    : compression_base(alloc) {
+    ::deflateInit2(&MY_Z_STATE, 5, Z_DEFLATED, -12, 8, Z_DEFAULT_STRATEGY);
 }
 
-void neo::deflate_compressor::reset() noexcept {
-    auto rc = ::tdefl_init(&MY_STATE, nullptr, nullptr, 0);
-    assert(rc == TDEFL_STATUS_OKAY);
+deflate_compressor::~deflate_compressor() {
+    if (_z_stream_ptr) {
+        ::deflateEnd(&MY_Z_STATE);
+    }
 }
+
+void neo::deflate_compressor::reset() noexcept { ::deflateReset(&MY_Z_STATE); }
 
 neo::compress_result
 neo::deflate_compressor::operator()(neo::mutable_buffer out, neo::const_buffer in, neo::flush f) {
     neo::compress_result acc;
 
-    while (true) {
-        auto in_size  = in.size();
-        auto out_size = out.size();
-        // Do the actual compression
-        auto result = ::tdefl_compress(&MY_STATE,
-                                       in.data(),
-                                       &in_size,
-                                       out.data(),
-                                       &out_size,
-                                       f == flush::finish  //
-                                           ? TDEFL_FINISH
-                                           : TDEFL_NO_FLUSH);
-        acc += {
-            .bytes_written = out_size,
-            .bytes_read    = in_size,
-            .done          = result == TDEFL_STATUS_DONE,
-        };
-        in += in_size;
-        out += out_size;
-        if (in.empty() || out.empty()) {
-            return acc;
-        }
-        // tdefl didn't consume _all_ of the buffers, but it *must* have made
-        // some progress. (Otherwise we'll enter an infinite loop.)
-        assert((in_size != 0 || out_size != 0) &&
-               "neo::deflate_compressor compressor entered a bad state! This program will "
-               "now halt. (It would otherwise enter an infinite loop.) This is "
-               "a bug in the 'neo-compress' library.");
-    }
+    ::z_stream& strm = MY_Z_STATE;
+    strm.next_in     = const_cast<::Byte*>(reinterpret_cast<const ::Byte*>(in.data()));
+    strm.avail_in    = static_cast<uInt>(in.size());
+    strm.next_out    = reinterpret_cast<::Byte*>(out.data());
+    strm.avail_out   = static_cast<uInt>(out.size());
+
+    auto result = ::deflate(&strm, f == flush::finish ? Z_FINISH : Z_NO_FLUSH);
+    neo_assert(invariant,
+               result == Z_OK || result == Z_STREAM_END || result == Z_BUF_ERROR,
+               "deflate() failed unexpectedly. ??",
+               result,
+               in.size(),
+               out.size(),
+               strm.avail_in,
+               strm.avail_out);
+    return {
+        .bytes_written = out.size() - strm.avail_out,
+        .bytes_read    = in.size() - strm.avail_in,
+        .done          = result == Z_STREAM_END,
+    };
 }

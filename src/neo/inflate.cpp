@@ -1,48 +1,50 @@
 #include "./inflate.hpp"
 
-#include <neo/c/miniz/miniz.h>
+#include <zlib.h>
 
-#define MY_STATE reinterpret_cast<::tinfl_decompressor&>(_state_bytes)
+using namespace std::literals;
+using namespace neo;
+
+#define MY_Z_STATE (*static_cast<::z_stream*>(_z_stream_ptr))
 
 /**
  * Initialize the state for tinfl.
  */
-neo::inflate_decompressor::inflate_decompressor() noexcept {
-    // Check that we've given it enough room to actually stores its data:
-    static_assert(sizeof(_state_bytes) == sizeof(::tinfl_decompressor));
-    // Initialize tinfl state
-    auto st = new (&MY_STATE)::tinfl_decompressor{};
-    tinfl_init(st);
+neo::inflate_decompressor::inflate_decompressor(inflate_decompressor::allocator_type alloc) noexcept
+    : compression_base(alloc) {
+    ::inflateInit2(&MY_Z_STATE, -15);
 }
 
-void neo::inflate_decompressor::reset() noexcept {
-    // Simply re-initialize the state
-    tinfl_init(&MY_STATE);
+inflate_decompressor::~inflate_decompressor() {
+    if (_z_stream_ptr) {
+        ::inflateEnd(&MY_Z_STATE);
+    }
 }
+
+void neo::inflate_decompressor::reset() noexcept { ::inflateReset(&MY_Z_STATE); }
 
 neo::decompress_result neo::inflate_decompressor::operator()(neo::mutable_buffer out,
                                                              neo::const_buffer   in) {
-    auto in_size  = in.size();
-    auto out_size = out.size();
 
-    auto result
-        = ::tinfl_decompress(&MY_STATE,
-                             reinterpret_cast<const mz_uint8*>(in.data()),
-                             &in_size,
-                             reinterpret_cast<mz_uint8*>(out.data()),
-                             reinterpret_cast<mz_uint8*>(out.data()),
-                             &out_size,
-                             TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF | TINFL_FLAG_HAS_MORE_INPUT);
-    assert(result != TINFL_STATUS_BAD_PARAM);
+    ::z_stream& strm = MY_Z_STATE;
+    strm.next_in     = const_cast<::Byte*>(reinterpret_cast<const ::Byte*>(in.data()));
+    strm.avail_in    = static_cast<uInt>(in.size());
+    strm.next_out    = reinterpret_cast<::Byte*>(out.data());
+    strm.avail_out   = static_cast<uInt>(out.size());
 
-    if (result < int(TINFL_STATUS_DONE)) {
+    auto result = ::inflate(&strm, Z_NO_FLUSH);
+    if (result != Z_OK && result != Z_BUF_ERROR && result != Z_STREAM_END) {
         // There was an error from tinfl!
-        throw std::runtime_error("Data inflate failed. Corrupted?");
+        if (strm.msg) {
+            throw std::runtime_error("Data inflate failed. Corrupted? Message from zlib: "s
+                                     + strm.msg);
+        } else {
+            throw std::runtime_error("Data inflate failed. Corrupted?");
+        }
     }
-
     return {
-        .bytes_written = out_size,
-        .bytes_read    = in_size,
-        .done          = result == TINFL_STATUS_DONE,
+        .bytes_written = out.size() - strm.avail_out,
+        .bytes_read    = in.size() - strm.avail_in,
+        .done          = result == Z_STREAM_END,
     };
 }

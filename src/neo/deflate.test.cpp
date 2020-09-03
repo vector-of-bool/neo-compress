@@ -1,6 +1,6 @@
 #include <neo/deflate.hpp>
 
-#include <neo/as_dynamic_buffer.hpp>
+#include <neo/dynbuf_io.hpp>
 
 #include <catch2/catch.hpp>
 
@@ -40,8 +40,8 @@ TEST_CASE("Compress with not enough output room") {
 }
 
 TEST_CASE("Compress into a dynamic buffer") {
-    std::string buf;
-    std::string text
+    neo::dynbuf_io<std::string> compressed;
+    std::string                 text
         = "Did you ever hear the tragedy of Darth Plagueis The Wise? I thought not. It’s not a "
           "story the Jedi would tell you. It’s a Sith legend. Darth Plagueis was a Dark Lord of "
           "the Sith, so powerful and so wise he could use the Force to influence the midichlorians "
@@ -51,14 +51,14 @@ TEST_CASE("Compress into a dynamic buffer") {
           "afraid of was losing his power, which eventually, of course, he did. Unfortunately, he "
           "taught his apprentice everything he knew, then his apprentice killed him in his sleep. "
           "Ironic. He could save others from death, but not himself.";
-    auto res = neo::buffer_transform(neo::deflate_compressor(),
-                                     neo::as_dynamic_buffer(buf),
-                                     neo::const_buffer(text),
-                                     neo::flush::finish);
+    neo::deflate_compressor defl;
+    auto                    res = neo::buffer_transform(defl, compressed, neo::const_buffer(text));
+    res += neo::buffer_transform(defl, compressed, neo::const_buffer(), neo::flush::finish);
+    compressed.shrink_uncommitted();
     CHECK(res.done);
     CHECK(res.bytes_read == text.size());
-    CHECK(buf.size() > 0);
-    CHECK(res.bytes_written == buf.size());
+    CHECK(compressed.storage().size() > 0);
+    CHECK(res.bytes_written == compressed.storage().size());
 }
 
 TEST_CASE("Compress streaming") {
@@ -80,7 +80,8 @@ TEST_CASE("Compress streaming") {
 
     neo::deflate_compressor c;
     std::string             text = "Hello, DEFLATE!";
-    auto res = neo::buffer_transform(c, mbuf_seq, neo::const_buffer(text), neo::flush::finish);
+    auto                    res  = neo::buffer_transform(c, mbuf_seq, neo::const_buffer(text));
+    res += neo::buffer_transform(c, mbuf_seq, neo::const_buffer(), neo::flush::finish);
     CHECK(res.bytes_read == text.size());
     CHECK(res.bytes_written <= sizeof mbufs_arrs);
     CHECK(res.done);
@@ -95,12 +96,13 @@ TEST_CASE("Big compress") {
 
     const std::string big_str = std::move(strm).str();
 
-    std::string big_compressed;
+    neo::dynbuf_io<std::string> compressed;
 
-    auto defl_res = neo::buffer_transform(neo::deflate_compressor(),
-                                          neo::as_dynamic_buffer(big_compressed),
-                                          neo::const_buffer(big_str),
-                                          neo::flush::finish);
+    neo::deflate_compressor defl;
+    auto defl_res = neo::buffer_transform(defl, compressed, neo::const_buffer(big_str));
+    defl_res += neo::buffer_transform(defl, compressed, neo::const_buffer(), neo::flush::finish);
+
+    compressed.shrink_uncommitted();
     CHECK(defl_res.bytes_read == big_str.size());
-    CHECK(defl_res.bytes_written == big_compressed.size());
+    CHECK(defl_res.bytes_written == compressed.storage().size());
 }

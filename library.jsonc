@@ -1,6 +1,7 @@
 {
     "name": "compress",
     "uses": [
-        "neo/buffer"
+        "neo/buffer",
+        "zlib/zlib"
     ]
 }

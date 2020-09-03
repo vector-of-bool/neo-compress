@@ -1,7 +1,7 @@
 #include <neo/deflate.hpp>
 #include <neo/inflate.hpp>
 
-#include <neo/as_dynamic_buffer.hpp>
+#include <neo/dynbuf_io.hpp>
 
 #include <catch2/catch.hpp>
 
@@ -20,10 +20,12 @@ TEST_CASE("Compress some data") {
     {
         neo::deflate_compressor c;
         std::string             text = "Hello, DEFLATE!";
-        auto                    res  = neo::buffer_transform(c,
-                                         neo::mutable_buffer(defl_str),
-                                         neo::const_buffer(text),
-                                         neo::flush::finish);
+
+        auto res = neo::buffer_transform(c, neo::mutable_buffer(defl_str), neo::const_buffer(text));
+        res += neo::buffer_transform(c,
+                                     neo::mutable_buffer(defl_str) + res.bytes_written,
+                                     neo::const_buffer(),
+                                     neo::flush::finish);
         CHECK(res.bytes_read == text.size());
         defl_str.resize(res.bytes_written);
         CHECK(res.done);
@@ -31,7 +33,7 @@ TEST_CASE("Compress some data") {
     {
         neo::inflate_decompressor decomp;
         std::string               res_str;
-        res_str.resize(50);
+        res_str.resize(64);
         // Get the DEFLATE data that we generated
         auto res = neo::buffer_transform(decomp,
                                          neo::mutable_buffer(res_str),
@@ -61,7 +63,8 @@ TEST_CASE("Decompress streaming") {
     {
         neo::deflate_compressor c;
         std::string             text = "Hello, DEFLATE!";
-        auto res = neo::buffer_transform(c, mbuf_seq, neo::const_buffer(text), neo::flush::finish);
+        auto                    res  = neo::buffer_transform(c, mbuf_seq, neo::const_buffer(text));
+        res += neo::buffer_transform(c, mbuf_seq, neo::const_buffer(), neo::flush::finish);
         CHECK(res.bytes_read == text.size());
         CHECK(res.bytes_written <= sizeof mbufs_arrs);
         CHECK(res.done);
@@ -69,7 +72,7 @@ TEST_CASE("Decompress streaming") {
     {
         neo::inflate_decompressor decomp;
         std::string               res_str;
-        res_str.resize(50);
+        res_str.resize(64);
         // Get the DEFLATE data that we generated
         auto res = neo::buffer_transform(decomp, neo::mutable_buffer(res_str), mbuf_seq);
         res_str.resize(res.bytes_written);
@@ -86,20 +89,23 @@ TEST_CASE("Big compress/decompress") {
 
     const std::string big_str = std::move(strm).str();
 
-    std::string big_compressed;
+    neo::dynbuf_io<std::string> compressed;
 
-    auto defl_res = neo::buffer_transform(neo::deflate_compressor(),
-                                          neo::as_dynamic_buffer(big_compressed),
-                                          neo::const_buffer(big_str),
-                                          neo::flush::finish);
+    neo::deflate_compressor defl;
+
+    auto defl_res = neo::buffer_transform(defl, compressed, neo::const_buffer(big_str));
+    defl_res += neo::buffer_transform(defl, compressed, neo::const_buffer(), neo::flush::finish);
+
+    compressed.shrink_uncommitted();
     CHECK(defl_res.bytes_read == big_str.size());
-    CHECK(defl_res.bytes_written == big_compressed.size());
+    CHECK(defl_res.bytes_written == compressed.storage().size());
 
-    std::string big_decompressed;
+    neo::dynbuf_io<std::string> io_decompressed;
 
-    auto infl_res = neo::buffer_transform(neo::inflate_decompressor(),
-                                          neo::as_dynamic_buffer(big_decompressed),
-                                          neo::const_buffer(big_compressed));
-    CHECK(infl_res.bytes_written == big_str.size());
-    CHECK(big_str == big_decompressed);
+    neo::inflate_decompressor infl;
+
+    auto infl_res = neo::buffer_transform(infl, io_decompressed, compressed);
+    io_decompressed.shrink_uncommitted();
+    REQUIRE(infl_res.bytes_written == big_str.size());
+    CHECK((big_str == io_decompressed.storage()));
 }

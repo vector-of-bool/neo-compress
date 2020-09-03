@@ -1,7 +1,7 @@
 #pragma once
 
 #include <neo/buffer_algorithm/transform.hpp>
-#include <neo/buffer_range_consumer.hpp>
+#include <neo/buffers_consumer.hpp>
 #include <neo/concepts.hpp>
 #include <neo/const_buffer.hpp>
 #include <neo/dynamic_buffer.hpp>
@@ -47,8 +47,8 @@ public:
 
     template <mutable_buffer_range Output, buffer_range Input>
     decompress_result decompress_more(Output&& out_, Input&& in_) noexcept {
-        buffer_range_consumer out{out_};
-        buffer_range_consumer in{in_};
+        buffers_consumer out{out_};
+        buffers_consumer in{in_};
 
         decompress_result acc;
         while (1) {
