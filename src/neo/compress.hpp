@@ -1,6 +1,7 @@
 #pragma once
 
 #include <neo/buffer_algorithm/transform.hpp>
+#include <neo/dynamic_buffer.hpp>
 
 namespace neo {
 

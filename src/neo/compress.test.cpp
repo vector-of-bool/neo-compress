@@ -1,7 +1,7 @@
 #include <neo/compress.hpp>
 
-#include <neo/as_dynamic_buffer.hpp>
 #include <neo/buffer_algorithm/copy.hpp>
+#include <neo/dynbuf_io.hpp>
 
 #include <catch2/catch.hpp>
 
@@ -60,17 +60,14 @@ std::string pasta
       "Ironic. He could save others from death, but not himself.";
 
 TEST_CASE("Compress into a dynamic buffer") {
-    std::string buf;
-    dummy_algo  c;
-    auto        res = neo::buffer_transform(c,
-                                     neo::as_dynamic_buffer(buf),
-                                     neo::const_buffer(pasta),
-                                     neo::flush::finish);
+    neo::dynbuf_io<std::string> compressed;
+    dummy_algo                  c;
+    auto res = neo::buffer_transform(c, compressed, neo::const_buffer(pasta), neo::flush::finish);
+    compressed.shrink_uncommitted();
     CHECK(res.done);
     CHECK(res.bytes_read == pasta.size());
-    CHECK(buf.size() > 0);
-    CHECK(res.bytes_written == buf.size());
-    CHECK(buf == pasta);
+    CHECK(res.bytes_written == compressed.storage().size());
+    CHECK(compressed.storage() == pasta);
 }
 
 TEST_CASE("Compress multi-part input") {
@@ -93,14 +90,12 @@ TEST_CASE("Compress multi-part input") {
                           "him in his sleep. "),
         neo::const_buffer("Ironic. He could save others from death, but not himself."),
     };
-    std::string buf;
-    dummy_algo  algo;
-    auto        res = neo::buffer_transform(algo, neo::as_dynamic_buffer(buf), bufs);
-    res += neo::buffer_transform(algo,
-                                 neo::as_dynamic_buffer(buf),
-                                 neo::const_buffer(),
-                                 neo::flush::finish);
+    neo::dynbuf_io<std::string> compressed;
+
+    auto res = neo::buffer_transform(dummy_algo(), compressed, bufs);
+    res += neo::buffer_transform(dummy_algo(), compressed, neo::const_buffer(), neo::flush::finish);
+    compressed.shrink_uncommitted();
     CHECK(res.done);
-    CHECK(buf == pasta);
-    CHECK(buf.size() == neo::buffer_size(bufs));
+    CHECK(compressed.storage() == pasta);
+    CHECK(compressed.storage().size() == neo::buffer_size(bufs));
 }

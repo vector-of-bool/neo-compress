@@ -1,6 +1,5 @@
 #include "./util.hpp"
 
-#include "../compressed_io.hpp"
 #include "../deflate.hpp"
 #include "../gzip.hpp"
 #include "../inflate.hpp"
