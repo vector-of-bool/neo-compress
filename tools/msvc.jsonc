@@ -1,4 +1,5 @@
 {
     "compiler_id": "msvc",
-    "flags": "/std:c++latest /Zc:preprocessor"
+    "flags": "/std:c++latest /Zc:preprocessor",
+    "debug": true
 }

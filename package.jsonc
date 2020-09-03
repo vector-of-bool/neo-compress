@@ -3,7 +3,7 @@
     "namespace": "neo",
     "version": "0.1.0",
     "depends": [
-        "neo-buffer^0.4.0",
+        "neo-buffer^0.4.1",
         "neo-fun^0.4.0",
         "zlib^1.2.9",
     ],

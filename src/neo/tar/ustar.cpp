@@ -1,6 +1,7 @@
 #include <neo/tar/ustar.hpp>
 
 #include <neo/as_buffer.hpp>
+#include <neo/iostream_io.hpp>
 #include <neo/platform.hpp>
 
 #include <fstream>
@@ -25,7 +26,7 @@ auto get_file_unix_mtime(const fs::path& fpath) {
                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                                 nullptr,
                                 OPEN_EXISTING,
-                                FILE_ATTRIBUTE_NORMAL,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
                                 nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         throw std::system_error(std::error_code(::GetLastError(), std::system_category()),
@@ -44,7 +45,7 @@ auto get_file_unix_mtime(const fs::path& fpath) {
 
     // The unix time relative to Window's time format:
     const static std::int64_t unix_time_start      = 0x019db1ded53e8000;
-    const static auto         win_ticks_per_escond = 10'000'000;
+    const static auto         win_ticks_per_second = 10'000'000;
     // Windows time as an u64:
     const std::uint64_t win_mtime
         = (static_cast<std::uint64_t>(last_write_time.dwHighDateTime) << 32)
@@ -139,12 +140,12 @@ void neo::detail::ustar_writer_base::add_file(std::string_view dest, const fs::p
     write_member_header(mem);
 
     std::ifstream infile;
-    infile.exceptions(infile.exceptions() | std::ios::failbit | std::ios::badbit);
+    infile.exceptions(infile.exceptions() | std::ios::badbit);
     infile.open(filepath, std::ios::binary);
 
     while (1) {
         thread_local std::array<char, 1024 * 1024 * 4> buffer;
-        auto n_read = infile.readsome(buffer.data(), buffer.size());
+        auto n_read = buffer_ios_read(infile, neo::as_buffer(buffer));
         if (n_read == 0) {
             break;
         }

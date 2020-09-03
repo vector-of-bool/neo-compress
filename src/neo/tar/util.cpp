@@ -1,6 +1,5 @@
 #include "./util.hpp"
 
-#include "../compressed_io.hpp"
 #include "../deflate.hpp"
 #include "../gzip.hpp"
 #include "../inflate.hpp"
@@ -11,6 +10,7 @@
 #include <neo/transform_io.hpp>
 
 #include <fstream>
+#include <string>
 
 #if !NEO_OS_IS_WINDOWS
 #include <sys/stat.h>
@@ -22,9 +22,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
-void restore_permissions(fs::path const&          file,
-                         ustar_member_info const& meminfo,
-                         const fs::path&          targz,
+void restore_permissions(const fs::path&          file,
+                         const ustar_member_info& meminfo,
+                         std::string_view         input_name,
                          const fs::path&          partpath);
 
 #if !NEO_OS_IS_WINDOWS
@@ -32,11 +32,11 @@ void restore_permissions(const fs::path&          file,
                          const ustar_member_info& meminfo,
                          std::string_view         input_name,
                          const fs::path&          partpath) {
-    auto rc = ::chmod(file.c_str(), meminfo.mode);
+    auto rc = ::chmod(file.c_str(), static_cast<mode_t>(meminfo.mode));
     if (rc) {
         throw std::system_error(std::error_code(errno, std::system_category()),
-                                "Failed to restore filemode for [" + file.native()
-                                    + "], extracted from [" + partpath.native() + "] contained in ["
+                                "Failed to restore filemode for [" + file.string()
+                                    + "], extracted from [" + partpath.string() + "] contained in ["
                                     + std::string(input_name) + "]");
     }
 }
@@ -103,19 +103,19 @@ void neo::expand_directory_targz(const fs::path&  destination,
                 + ("] contains a member with an absolute path. The archive is unsafe to extract. "
                    "It may be malformed, created abnormally, or malicious. ")
                 + "Member filename is [" + std::string(meminfo.filename_str()) + "], prefix is ["
-                + std::string(meminfo.prefix_str()) + "]. Normalized filepath is [" + norm.native()
+                + std::string(meminfo.prefix_str()) + "]. Normalized filepath is [" + norm.string()
                 + "]");
         }
-        if (norm.begin()->native() == "..") {
+        if (norm.begin()->string() == "..") {
             // Pretty ugly... want std::format...
             throw std::runtime_error(
                 "Archive [" + std::string(input_name)
                 + ("] contains member which would extract above the destination path. The archive "
                    "is unsafe to extract. It may be malformed, created abnormally, or malicious. ")
                 + "Member filename is [" + std::string(meminfo.filename_str()) + "], prefix is ["
-                + std::string(meminfo.prefix_str()) + "]. Normalized filename is [" + norm.native()
-                + "]. " + "Destination directory is [" + destination.native()
-                + "], which would resolve to [" + (destination / norm).native() + "]");
+                + std::string(meminfo.prefix_str()) + "]. Normalized filename is [" + norm.string()
+                + "]. " + "Destination directory is [" + destination.string()
+                + "], which would resolve to [" + (destination / norm).string() + "]");
         }
         auto file_dest = destination / norm;
 
@@ -136,10 +136,10 @@ void neo::expand_directory_targz(const fs::path&  destination,
             } catch (const std::system_error& e) {
                 throw std::system_error(std::error_code(errno, std::generic_category()),
                                         "Failure while extracting archive member to ["
-                                            + file_dest.native() + "]: " + e.what());
+                                            + file_dest.string() + "]: " + e.what());
             }
             ofile.close();
-            if constexpr (!NEO_OS_IS_WINDOWS) {
+            if constexpr (!neo::os_is_windows) {
                 restore_permissions(file_dest, meminfo, input_name, norm);
             }
         } else {

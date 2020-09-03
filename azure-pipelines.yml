@@ -30,7 +30,9 @@ jobs:
           curl -L https://github.com/vector-of-bool/dds/releases/download/0.1.0-alpha.4/dds-linux-x64 -o dds
           chmod +x dds
         displayName: Prepare System
-      - script: make gcc-9
+      - script: |
+          ./dds catalog import --json pkgs-cat.jsonc
+          ./dds build -t tools/gcc-9.jsonc
         displayName: Build and Run Unit Tests
 
   - job: linux_gcc10
@@ -46,7 +48,9 @@ jobs:
           curl -L https://github.com/vector-of-bool/dds/releases/download/0.1.0-alpha.4/dds-linux-x64 -o dds
           chmod +x dds
         displayName: Prepare System
-      - script: make gcc-10
+      - script: |
+          ./dds catalog import --json pkgs-cat.jsonc
+          ./dds build -t tools/gcc-10.jsonc
         displayName: Build and Run Unit Tests
 
   - job: macos_gcc9
@@ -61,7 +65,9 @@ jobs:
           curl -L https://github.com/vector-of-bool/dds/releases/download/0.1.0-alpha.4/dds-macos-x64 -o dds
           chmod +x dds
         displayName: Prepare System
-      - script: make gcc-9
+      - script: |
+          ./dds catalog import --json pkgs-cat.jsonc
+          ./dds build -t tools/gcc-9.jsonc
         displayName: Build and Run Unit Tests
 
   - job: macos_gcc10
@@ -78,5 +84,7 @@ jobs:
           ./dds catalog add neo-concepts@0.4.0 --git-url https://github.com/vector-of-bool/neo-concepts.git --git-ref 0.4.0
           ./dds catalog add neo-fun@0.4.1 --git-url https://github.com/vector-of-bool/neo-fun.git --git-ref 0.4.1
         displayName: Prepare System
-      - script: make gcc-10
+      - script: |
+          ./dds catalog import --json pkgs-cat.jsonc
+          ./dds build -t tools/gcc-10.jsonc
         displayName: Build and Run Unit Tests
