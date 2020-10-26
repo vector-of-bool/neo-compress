@@ -8,6 +8,7 @@
 #include <neo/as_buffer.hpp>
 #include <neo/iostream_io.hpp>
 #include <neo/transform_io.hpp>
+#include <neo/ufmt.hpp>
 
 #include <fstream>
 #include <string>
@@ -67,22 +68,29 @@ void neo::compress_directory_targz(const fs::path& directory, const fs::path& ta
 }
 
 /// XXX: Does not yet restore mtime/ownership
-void neo::expand_directory_targz(const fs::path& destination, const fs::path& targz_source) {
+void neo::expand_directory_targz(const expand_options& opts, const fs::path& targz_source) {
     std::ifstream in;
     in.exceptions(in.exceptions() | std::ios::badbit);
     in.open(targz_source, std::ios::binary);
 
-    expand_directory_targz(destination, in, targz_source.string());
+    if (opts.input_name.empty()) {
+        auto opts2       = opts;
+        auto in_name     = targz_source.string();
+        opts2.input_name = in_name;
+        expand_directory_targz(opts2, in);
+    } else {
+        expand_directory_targz(opts, in);
+    }
 }
 
-void neo::expand_directory_targz(const fs::path&  destination,
-                                 std::istream&    in,
-                                 std::string_view input_name) {
+void neo::expand_directory_targz(const expand_options& opts, std::istream& in) {
     gzip_decompressor<inflate_decompressor> gzip;
     iostream_io                             file_in{in};
     buffer_transform_source                 gzip_in{file_in, gzip};
 
     ustar_reader tar_reader{gzip_in};
+
+    auto& destination = opts.destination_directory;
 
     for (const auto& meminfo : tar_reader) {
         fs::path filepath = meminfo.filename_str();
@@ -90,34 +98,49 @@ void neo::expand_directory_targz(const fs::path&  destination,
             filepath = meminfo.prefix_str() / filepath;
         }
 
+        auto n_elems = std::distance(filepath.begin(), filepath.end());
+        if (opts.strip_components >= n_elems) {
+            continue;
+        }
+
         auto norm = filepath.lexically_normal();
         if (norm.empty()) {
-            throw std::runtime_error("Archive [" + std::string(input_name)
-                                     + ("] contains member with an empty filename/filepath. The "
-                                        "archive may be malformed or created abnormally."));
+            throw std::runtime_error(
+                ufmt("Archive [{}] contains member with an empty filename/filepath. The "
+                     "archive may be malformed or created abnormally.",
+                     opts.input_name));
         }
         if (norm.is_absolute()) {
             // Pretty ugly... want std::format...
             throw std::runtime_error(
-                "Archive [" + std::string(input_name)
-                + ("] contains a member with an absolute path. The archive is unsafe to extract. "
-                   "It may be malformed, created abnormally, or malicious. ")
-                + "Member filename is [" + std::string(meminfo.filename_str()) + "], prefix is ["
-                + std::string(meminfo.prefix_str()) + "]. Normalized filepath is [" + norm.string()
-                + "]");
+                ufmt("Archive [{}] contains a member with an absolute path. The archive is unsafe "
+                     "to extract. If may be malformed, craeted abnormally, or is malicious. Member "
+                     "filename is [{}], prefix is [{}]. Normalized filepath is [{}].",
+                     opts.input_name,
+                     meminfo.filename_str(),
+                     meminfo.prefix_str(),
+                     norm.string()));
         }
         if (norm.begin()->string() == "..") {
             // Pretty ugly... want std::format...
             throw std::runtime_error(
-                "Archive [" + std::string(input_name)
-                + ("] contains member which would extract above the destination path. The archive "
-                   "is unsafe to extract. It may be malformed, created abnormally, or malicious. ")
-                + "Member filename is [" + std::string(meminfo.filename_str()) + "], prefix is ["
-                + std::string(meminfo.prefix_str()) + "]. Normalized filename is [" + norm.string()
-                + "]. " + "Destination directory is [" + destination.string()
-                + "], which would resolve to [" + (destination / norm).string() + "]");
+                ufmt("Archive [{}] contains member which would extract above the destination path. "
+                     "The archive is unsafe to extract. It may be malformed, created abnormally, "
+                     "or malicious. Member filename is [{}], prefix is [{}]. Normalized filename "
+                     "is [{}]. Destination directory is [{}], which would resolve to [{}].",
+                     opts.input_name,
+                     meminfo.filename_str(),
+                     meminfo.prefix_str(),
+                     norm.string(),
+                     destination.string(),
+                     (destination / norm).lexically_normal().string()));
         }
-        auto file_dest = destination / norm;
+
+        auto stripped_path = std::reduce(std::next(filepath.begin(), opts.strip_components),
+                                         filepath.end(),
+                                         std::filesystem::path(),
+                                         std::divides{});
+        auto file_dest     = (destination / stripped_path).lexically_normal();
 
         if (meminfo.is_directory()) {
             fs::create_directory(file_dest);
@@ -134,19 +157,26 @@ void neo::expand_directory_targz(const fs::path&  destination,
                 neo::iostream_io data_sink{ofile};
                 buffer_copy(data_sink, tar_reader.all_data());
             } catch (const std::system_error& e) {
-                throw std::system_error(std::error_code(errno, std::generic_category()),
-                                        "Failure while extracting archive member to ["
-                                            + file_dest.string() + "]: " + e.what());
+                throw std::
+                    system_error(std::error_code(errno, std::generic_category()),
+                                 neo::ufmt("Failure while extractive archive member to [{}]: {}",
+                                           file_dest.string(),
+                                           e.what()));
             }
             ofile.close();
             if constexpr (!neo::os_is_windows) {
-                restore_permissions(file_dest, meminfo, input_name, norm);
+                restore_permissions(file_dest, meminfo, opts.input_name, norm);
             }
+        } else if (meminfo.typeflag == ustar_member_info::type_t::pax_extended_record
+                   || meminfo.typeflag == ustar_member_info::type_t::pax_global_record) {
+            // TODO: We don't handle pax headers anything special yet.
         } else {
-            throw std::runtime_error("Don't know how to expand archive member. Archive is ["
-                                     + std::string(input_name) + "], member is ["
-                                     + filepath.string() + "], type is ["
-                                     + std::to_string(int(meminfo.typeflag)) + "].");
+            throw std::runtime_error(
+                neo::ufmt("Don't know how to expand archive member. Archive "
+                          "is [{}], member is [{}], type is [{}].",
+                          opts.input_name,
+                          filepath.string(),
+                          char(meminfo.typeflag)));
         }
     }
 }
