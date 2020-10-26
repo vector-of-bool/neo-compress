@@ -32,6 +32,9 @@ struct ustar_member_info {
         directory     = '5',
         fifo          = '6',
         hpc_file      = '7',
+        // Extra headers defined by pax:
+        pax_extended_record = 'x',
+        pax_global_record   = 'g',
     };
     std::array<char, 100> filename_bytes = {};
     int                   mode           = 0b110'110'100;
@@ -262,7 +265,7 @@ public:
 };
 
 template <typename T>
-ustar_reader(T &&)->ustar_reader<T>;
+ustar_reader(T &&) -> ustar_reader<T>;
 
 template <buffer_sink Output>
 class ustar_writer : public detail::ustar_writer_base {
@@ -341,6 +344,6 @@ public:
 };
 
 template <typename T>
-ustar_writer(T &&)->ustar_writer<T>;
+ustar_writer(T &&) -> ustar_writer<T>;
 
 }  // namespace neo

@@ -142,6 +142,9 @@ void neo::expand_directory_targz(const fs::path&  destination,
             if constexpr (!neo::os_is_windows) {
                 restore_permissions(file_dest, meminfo, input_name, norm);
             }
+        } else if (meminfo.typeflag == ustar_member_info::type_t::pax_extended_record
+                   || meminfo.typeflag == ustar_member_info::type_t::pax_global_record) {
+            // TODO: We don't handle pax headers anything special yet.
         } else {
             throw std::runtime_error("Don't know how to expand archive member. Archive is ["
                                      + std::string(input_name) + "], member is ["
