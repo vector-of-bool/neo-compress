@@ -51,3 +51,39 @@ TEST_CASE("Expand a directory") {
     CHECK(str.read_area_view()
           == "I'm just another file, but in a subdirectory!\n\n- The Sign Painter");
 }
+
+TEST_CASE("Expand an archive containing pax extensions") {
+    auto dest = BUILD_DIR / "test-expand.dir";
+    fs::remove_all(dest);
+    fs::create_directories(dest);
+    auto tgz_in = ROOT / "data/neo-buffer-0.4.2.tar.gz";
+    neo::expand_directory_targz(dest, tgz_in);
+    CHECK(fs::is_regular_file(dest / "neo-buffer-0.4.2/package.jsonc"));
+
+    neo::string_dynbuf_io str;
+    neo::buffer_copy(str,
+                     neo::iostream_io(
+                         std::ifstream{dest / "neo-buffer-0.4.2/package.jsonc", std::ios::binary}));
+    CHECK(str.read_area_view() == R"({
+    "name": "neo-buffer",
+    "version": "0.4.2",
+    "namespace": "neo",
+    "test_driver": "Catch-Main",
+    "depends": [
+        "neo-concepts^0.4.0",
+        "neo-fun^0.4.1"
+    ]
+})");
+
+    fs::remove_all(dest);
+    fs::create_directories(dest);
+    neo::expand_directory_targz(
+        neo::expand_options{
+            .destination_directory = dest,
+            .input_name            = tgz_in.string(),
+            .strip_components      = 1,
+        },
+        tgz_in);
+    // We've stripped on directory component
+    CHECK(fs::is_regular_file(dest / "package.jsonc"));
+}
