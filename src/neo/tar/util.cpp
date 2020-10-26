@@ -73,12 +73,17 @@ void neo::expand_directory_targz(const expand_options& opts, const fs::path& tar
     in.exceptions(in.exceptions() | std::ios::badbit);
     in.open(targz_source, std::ios::binary);
 
-    expand_directory_targz(opts, in, targz_source.string());
+    if (opts.input_name.empty()) {
+        auto opts2       = opts;
+        auto in_name     = targz_source.string();
+        opts2.input_name = in_name;
+        expand_directory_targz(opts2, in);
+    } else {
+        expand_directory_targz(opts, in);
+    }
 }
 
-void neo::expand_directory_targz(const expand_options& opts,
-                                 std::istream&         in,
-                                 std::string_view      input_name) {
+void neo::expand_directory_targz(const expand_options& opts, std::istream& in) {
     gzip_decompressor<inflate_decompressor> gzip;
     iostream_io                             file_in{in};
     buffer_transform_source                 gzip_in{file_in, gzip};
@@ -103,7 +108,7 @@ void neo::expand_directory_targz(const expand_options& opts,
             throw std::runtime_error(
                 ufmt("Archive [{}] contains member with an empty filename/filepath. The "
                      "archive may be malformed or created abnormally.",
-                     input_name));
+                     opts.input_name));
         }
         if (norm.is_absolute()) {
             // Pretty ugly... want std::format...
@@ -111,7 +116,7 @@ void neo::expand_directory_targz(const expand_options& opts,
                 ufmt("Archive [{}] contains a member with an absolute path. The archive is unsafe "
                      "to extract. If may be malformed, craeted abnormally, or is malicious. Member "
                      "filename is [{}], prefix is [{}]. Normalized filepath is [{}].",
-                     input_name,
+                     opts.input_name,
                      meminfo.filename_str(),
                      meminfo.prefix_str(),
                      norm.string()));
@@ -123,7 +128,7 @@ void neo::expand_directory_targz(const expand_options& opts,
                      "The archive is unsafe to extract. It may be malformed, created abnormally, "
                      "or malicious. Member filename is [{}], prefix is [{}]. Normalized filename "
                      "is [{}]. Destination directory is [{}], which would resolve to [{}].",
-                     input_name,
+                     opts.input_name,
                      meminfo.filename_str(),
                      meminfo.prefix_str(),
                      norm.string(),
@@ -160,7 +165,7 @@ void neo::expand_directory_targz(const expand_options& opts,
             }
             ofile.close();
             if constexpr (!neo::os_is_windows) {
-                restore_permissions(file_dest, meminfo, input_name, norm);
+                restore_permissions(file_dest, meminfo, opts.input_name, norm);
             }
         } else if (meminfo.typeflag == ustar_member_info::type_t::pax_extended_record
                    || meminfo.typeflag == ustar_member_info::type_t::pax_global_record) {
@@ -169,7 +174,7 @@ void neo::expand_directory_targz(const expand_options& opts,
             throw std::runtime_error(
                 neo::ufmt("Don't know how to expand archive member. Archive "
                           "is [{}], member is [{}], type is [{}].",
-                          input_name,
+                          opts.input_name,
                           filepath.string(),
                           char(meminfo.typeflag)));
         }

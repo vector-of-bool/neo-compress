@@ -15,9 +15,7 @@ struct expand_options {
     unsigned              strip_components = 0;
 };
 
-void expand_directory_targz(const expand_options& opts,
-                            std::istream&         input,
-                            std::string_view      input_name);
+void expand_directory_targz(const expand_options& opts, std::istream& input);
 
 void expand_directory_targz(const expand_options& opts, const std::filesystem::path& targz_input);
 
