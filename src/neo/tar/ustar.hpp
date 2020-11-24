@@ -219,7 +219,7 @@ public:
         return decode_res.value();
     }
 
-    auto next(std::size_t max_size) noexcept {
+    auto next(std::size_t max_size) noexcept(noexcept(input().next(max_size))) {
         auto read_size = max_size > _remaining_member_size ? _remaining_member_size : max_size;
         return input().next(read_size);
     }
@@ -234,7 +234,7 @@ public:
         input().consume(s);
     }
 
-    auto all_data() noexcept { return next(_remaining_member_size); }
+    auto all_data() noexcept(noexcept(next(1))) { return next(_remaining_member_size); }
 
     class member_iterator : public neo::iterator_facade<member_iterator> {
         ustar_reader*                    _reader = nullptr;
@@ -255,12 +255,12 @@ public:
             return *_info;
         }
 
-        void increment() noexcept { _info = _reader->next_member(); }
+        void increment() { _info = _reader->next_member(); }
 
         constexpr bool at_end() const noexcept { return !_info.has_value(); }
     };
 
-    auto begin() noexcept { return member_iterator{*this}; }
+    auto begin() { return member_iterator{*this}; }
     auto end() const noexcept { return typename member_iterator::sentinel_type{}; }
 };
 
