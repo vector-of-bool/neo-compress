@@ -29,5 +29,7 @@ compression_base::compression_base(compression_base&& other) noexcept
 }
 
 compression_base::~compression_base() {
-    get_allocator().deallocate(static_cast<std::byte*>(_z_stream_ptr), 0);
+    if (_z_stream_ptr) {
+        get_allocator().deallocate(static_cast<std::byte*>(_z_stream_ptr), 0);
+    }
 }
