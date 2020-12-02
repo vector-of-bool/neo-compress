@@ -2,6 +2,7 @@
 
 #include "../deflate.hpp"
 #include "../gzip.hpp"
+#include "../gzip_io.hpp"
 #include "../inflate.hpp"
 #include "./ustar.hpp"
 
@@ -51,11 +52,9 @@ void neo::compress_directory_targz(const fs::path& directory, const fs::path& ta
     out.exceptions(out.exceptions() | std::ios::badbit | std::ios::failbit);
     out.open(targz_dest, std::ios::binary);
 
-    // Compressor state:
-    gzip_compressor<deflate_compressor> gzip;
     // Compression pipeline:
-    iostream_io  file_out{out};
-    ustar_writer tar_writer{buffer_transform_sink{file_out, gzip}};
+    gzip_sink    gz_out{iostream_io{out}};
+    ustar_writer tar_writer{gz_out};
 
     auto abs_path = fs::canonical(directory);
     for (auto item : fs::recursive_directory_iterator(abs_path)) {
@@ -64,7 +63,7 @@ void neo::compress_directory_targz(const fs::path& directory, const fs::path& ta
     }
 
     tar_writer.finish();
-    buffer_transform(gzip, file_out, const_buffer(), flush::finish);
+    gz_out.finish();
 }
 
 /// XXX: Does not yet restore mtime/ownership
@@ -84,11 +83,9 @@ void neo::expand_directory_targz(const expand_options& opts, const fs::path& tar
 }
 
 void neo::expand_directory_targz(const expand_options& opts, std::istream& in) {
-    gzip_decompressor<inflate_decompressor> gzip;
-    iostream_io                             file_in{in};
-    buffer_transform_source                 gzip_in{file_in, gzip};
-
-    ustar_reader tar_reader{gzip_in};
+    iostream_io  file_in{in};
+    gzip_source  gz_in{file_in};
+    ustar_reader tar_reader{gz_in};
 
     auto& destination = opts.destination_directory;
 

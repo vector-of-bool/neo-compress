@@ -283,6 +283,8 @@ public:
     constexpr explicit gzip_decompressor(InnerDecompressor&& c)
         : _decompress(NEO_FWD(c)) {}
 
+    constexpr void reset() noexcept { *this = gzip_decompressor(); }
+
 /**
  * Continually read bytes into Arr until Arr is full
  */
@@ -350,6 +352,10 @@ public:
                 .done          = NEO_CORO_IS_FINISHED(_coro),
             };
         };
+
+        if (NEO_CORO_IS_FINISHED(_coro)) {
+            return calc_ret();
+        }
 
         NEO_CORO_BEGIN(_coro);
 

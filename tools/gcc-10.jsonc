@@ -1,5 +1,9 @@
 {
     "compiler_id": "gnu",
     "cxx_compiler": "g++-10",
-    "cxx_version": "c++20"
+    "cxx_version": "c++20",
+    "c_flags": [
+        // GCC 10 on macOS upgrades this warning to an error
+        "-Wno-error=implicit-function-declaration"
+    ]
 }
