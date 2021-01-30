@@ -257,7 +257,7 @@ public:
 
         void increment() { _info = _reader->next_member(); }
 
-        constexpr bool equal_to(sentinel_type) const noexcept { return at_end(); }
+        constexpr bool operator==(sentinel_type) const noexcept { return at_end(); }
         constexpr bool at_end() const noexcept { return !_info.has_value(); }
     };
 
