@@ -1,11 +1,11 @@
 {
     "name": "neo-compress",
     "namespace": "neo",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "depends": [
-        "neo-buffer@0.5.0",
-        "neo-fun@0.7.0",
-        "zlib@1.2.9",
+        "neo-buffer^0.5.0",
+        "neo-fun^0.7.0",
+        "zlib^1.2.9",
     ],
     "test_driver": "Catch-Main"
 }
