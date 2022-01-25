@@ -59,7 +59,7 @@ void neo::compress_directory_targz(const fs::path& directory, const fs::path& ta
     auto abs_path = fs::canonical(directory);
     for (auto item : fs::recursive_directory_iterator(abs_path)) {
         auto relpath = item.path().lexically_relative(abs_path);
-        tar_writer.add_file(relpath.string(), item.path());
+        tar_writer.add_file(relpath.generic_string(), item.path());
     }
 
     tar_writer.finish();
